@@ -53,7 +53,7 @@ public class MapApp extends Application {
 
         engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> {
     if (newState == javafx.concurrent.Worker.State.SUCCEEDED) {
-            List<Well> wells = loadCSV("groundwater.csv");
+            List<Well> wells = loadCSV("WaterAbstraction.csv");
 
             for (Well well : wells) {
                 String js = String.format(
