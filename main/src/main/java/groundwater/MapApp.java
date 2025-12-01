@@ -44,6 +44,8 @@ private final CoordinateTransform transform =
         System.setProperty("prism.text", "t2k");
     
         launch(args);
+        System.out.println("Loading groundwater data...");
+
     }
 
    @Override
@@ -68,13 +70,12 @@ public void start(Stage stage) {
 
     engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
         if (newDoc != null) {
-            new Thread(() -> loadGroundwaterData("GroundWater.csv")).start();
+            new Thread(() -> loadGroundwaterData("data/GroundWater.csv")).start();
         }
     });
 
     stage.setScene(new Scene(webView, 1200, 800));
 
-    // ------------- REQUIRED FIXES ------------------
 
     // Fix #2: Force scene to pixel-aligned rendering
     stage.getScene().getRoot().setStyle("-fx-snap-to-pixel:true;");
@@ -87,92 +88,136 @@ public void start(Stage stage) {
         stage.setHeight(Math.floor(newV.doubleValue()))
     );
 
-    // -----------------------------------------------
-
     stage.setTitle("Groundwater Levels Viewer");
     stage.show();
 }
 
+private String cleanWkt(String wkt) {
+
+    if (wkt == null) return null;
+
+    // remove quotes
+    wkt = wkt.replace("\"", "");
+
+    // remove tabs & weird whitespace
+    wkt = wkt.replaceAll("[\\t\\r\\n]", " ");
+
+    // collapse multiple spaces
+    wkt = wkt.replaceAll(" +", " ");
+
+    // ensure MULTILINESTRING outer parentheses are balanced
+    wkt = wkt.trim();
+
+    // sometimes ends with stray comma
+    while (wkt.endsWith(",")) {
+        wkt = wkt.substring(0, wkt.length() - 1).trim();
+    }
+
+    // remove trailing semicolon if CSV had one
+    if (wkt.endsWith(";")) {
+        wkt = wkt.substring(0, wkt.length() - 1).trim();
+    }
+
+    // some rows end with ))" – bad
+    if (wkt.endsWith(")\"")) {
+        wkt = wkt.substring(0, wkt.length() - 2).trim();
+    }
+
+    return wkt;
+}
 
     /** Load CSV and send lines to the map */
-    private void loadGroundwaterData(String filename) {
+   private void loadGroundwaterData(String filename) {
     try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
 
         String line;
         boolean header = true;
 
+        GeometryFactory gf = new GeometryFactory();
+        WKTReader reader = new WKTReader(gf);
+
         while ((line = br.readLine()) != null) {
+
             if (header) {
                 header = false;
                 continue;
             }
 
-            // Split on TAB instead of comma
-            String[] cols = line.split("\t");
+            // Split CSV fields
+            String[] cols = line.split(";", -1);
 
-            // Find WKT column (usually last)
-            String rawWkt = null;
-            for (String c : cols) {
-                if (c.contains("MULTILINESTRING")) {
-                    rawWkt = c;
+            // ----------- FIND WKT START COLUMN -----------
+
+            int wktStart = -1;
+            for (int i = 0; i < cols.length; i++) {
+                if (cols[i].contains("MULTILINESTRING")) {
+                    wktStart = i;
                     break;
                 }
             }
-            if (rawWkt == null) continue; // skip broken rows
+            if (wktStart == -1)
+                continue; // no geometry, skip row
 
-            String wkt = rawWkt.trim();
+            // ---------- REBUILD FULL WKT (may span columns) -----------
 
-            // Find kote (depends on your file)
-            int kote;
-            try {
-                kote = Integer.parseInt(cols[4]);  // adjust if column changes
-            } catch (Exception e) {
-                kote = 0;
+            StringBuilder wktBuilder = new StringBuilder();
+            for (int i = wktStart; i < cols.length; i++) {
+                wktBuilder.append(cols[i]);
             }
 
-          try {
-    GeometryFactory gf = new GeometryFactory();
-    WKTReader reader = new WKTReader(gf);
+            String rawWkt = cleanWkt(wktBuilder.toString());
 
-    Geometry geom = reader.read(wkt);
+            // ---------- Parse kote (depth/level) --------------------
+            int kote = 0;
+            try {
+                kote = Integer.parseInt(cols[4]);
+            } catch (Exception ignore) {}
 
-    int numGeom = geom.getNumGeometries();
+            // ---------- Parse geometry safely -----------------------
 
-    for (int gIndex = 0; gIndex < numGeom; gIndex++) {
+            Geometry geom;
+            try {
+                geom = reader.read(rawWkt);
+            } catch (Exception e) {
+                System.err.println("Invalid WKT skipped: " + rawWkt);
+                continue;
+            }
 
-        Geometry part = geom.getGeometryN(gIndex);
-        if (!(part instanceof LineString)) continue;
+            // ---------- Iterate multilines --------------------------
 
-        LineString lineString = (LineString) part;
-        Coordinate[] coords = lineString.getCoordinates();
+            int numGeom = geom.getNumGeometries();
 
-       StringBuilder js = new StringBuilder("addLine([");
+            for (int gIndex = 0; gIndex < numGeom; gIndex++) {
 
-for (int i = 0; i < coords.length; i++) {
-    Coordinate c = coords[i];
-    double[] latlon = toLatLon(c.x, c.y);
-    js.append("[").append(latlon[0]).append(",").append(latlon[1]).append("]");
-    if (i < coords.length - 1) js.append(",");
-}
+                Geometry part = geom.getGeometryN(gIndex);
+                if (!(part instanceof LineString)) continue;
 
-js.append("], ").append(kote).append(");");
+                LineString ls = (LineString) part;
 
+                Coordinate[] coords = ls.getCoordinates();
 
+                // Build JS call
+                StringBuilder js = new StringBuilder("addLine([");
 
-        Platform.runLater(() -> engine.executeScript(js.toString()));
-    }
+                for (int i = 0; i < coords.length; i++) {
+                    Coordinate c = coords[i];
+                    double[] latlon = toLatLon(c.x, c.y);
+                    js.append("[").append(latlon[0]).append(",").append(latlon[1]).append("]");
+                    if (i < coords.length - 1) js.append(",");
+                }
 
-} catch (Exception e) {
-    e.printStackTrace();
-}
+                js.append("], ").append(kote).append(");");
 
-
+                String script = js.toString();
+                Platform.runLater(() -> engine.executeScript(script));
+            }
         }
 
     } catch (Exception e) {
         e.printStackTrace();
     }
 }
+
 
     /** Parse MULTILINESTRING ((x y, x y), (x y, x y)) */
     private List<List<double[]>> parseMultiLineString(String wkt) {
@@ -233,4 +278,5 @@ private double[] toLatLon(double x, double y) {
         sb.append("]");
         return sb.toString();
     }
+    
 }
