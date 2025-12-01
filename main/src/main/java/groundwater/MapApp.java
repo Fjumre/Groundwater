@@ -5,84 +5,174 @@ import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.io.WKTReader;
+import org.locationtech.proj4j.CRSFactory;
+import org.locationtech.proj4j.CoordinateReferenceSystem;
+import org.locationtech.proj4j.CoordinateTransform;
+import org.locationtech.proj4j.CoordinateTransformFactory;
+import org.locationtech.proj4j.ProjCoordinate;
+
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebView;
 import javafx.stage.Stage;
 
+
 public class MapApp extends Application {
 
     private WebEngine engine;
+private final CRSFactory crsFactory = new CRSFactory();
+private final CoordinateTransformFactory ctFactory = new CoordinateTransformFactory();
+private final CoordinateReferenceSystem srcCRS =
+        crsFactory.createFromName("EPSG:25832");  // your X/Y system
+private final CoordinateReferenceSystem dstCRS =
+        crsFactory.createFromName("EPSG:4326");   // WGS84 lat/lon
+private final CoordinateTransform transform =
+        ctFactory.createTransform(srcCRS, dstCRS);
 
     public static void main(String[] args) {
+        System.setProperty("glass.win.uiScale", "100%");
+        System.setProperty("prism.allowhidpi", "false");
+
+        System.setProperty("prism.order", "sw");
+        System.setProperty("prism.text", "t2k");
+    
         launch(args);
     }
 
-    @Override
-    public void start(Stage stage) {
+   @Override
+public void start(Stage stage) {
 
-        WebView webView = new WebView();
-        engine = webView.getEngine();
+    WebView webView = new WebView();
+    engine = webView.getEngine();
 
-        // Load Leaflet map
-        engine.load(getClass().getResource("/map.html").toExternalForm());
+    webView.setZoom(1.0);
+    webView.setStyle("""
+        -fx-snap-to-pixel: true;
+        -fx-font-smoothing-type: lcd;
+    """);
 
-        // When the page is ready, load data
-        engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
-            if (newDoc != null) {
-                new Thread(() -> loadGroundwaterData("WaterLevel.csv")).start();
-            }
-        });
+    webView.layoutBoundsProperty().addListener((obs, oldB, newB) -> {
+        double w = Math.floor(newB.getWidth());
+        double h = Math.floor(newB.getHeight());
+        webView.setPrefSize(w, h);
+    });
 
-        stage.setScene(new Scene(webView, 1200, 800));
-        stage.setTitle("Groundwater Levels Viewer");
-        stage.show();
-    }
+    engine.load(getClass().getResource("/map.html").toExternalForm());
+
+    engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
+        if (newDoc != null) {
+            new Thread(() -> loadGroundwaterData("GroundWater.csv")).start();
+        }
+    });
+
+    stage.setScene(new Scene(webView, 1200, 800));
+
+    // ------------- REQUIRED FIXES ------------------
+
+    // Fix #2: Force scene to pixel-aligned rendering
+    stage.getScene().getRoot().setStyle("-fx-snap-to-pixel:true;");
+
+    // Fix #3: Prevent fractional stage dimensions
+    stage.widthProperty().addListener((obs, oldV, newV) ->
+        stage.setWidth(Math.floor(newV.doubleValue()))
+    );
+    stage.heightProperty().addListener((obs, oldV, newV) ->
+        stage.setHeight(Math.floor(newV.doubleValue()))
+    );
+
+    // -----------------------------------------------
+
+    stage.setTitle("Groundwater Levels Viewer");
+    stage.show();
+}
+
 
     /** Load CSV and send lines to the map */
     private void loadGroundwaterData(String filename) {
-        try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
+    try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
 
-            String line;
-            boolean header = true;
+        String line;
+        boolean header = true;
 
-            while ((line = br.readLine()) != null) {
-                if (header) {
-                    header = false;
-                    continue;
-                }
-
-                String[] cols = line.split(",");
-
-                int kote = Integer.parseInt(cols[4]);       // groundwater level
-                String wkt = cols[cols.length - 1];         // shape_wkt column
-
-                List<List<double[]>> lines = parseMultiLineString(wkt);
-
-                List<List<double[]>> latLonLines = new ArrayList<>();
-
-                for (List<double[]> seg : lines) {
-                    List<double[]> converted = new ArrayList<>();
-                    for (double[] xy : seg) {
-                        converted.add(toLatLon(xy[0], xy[1]));
-                    }
-                    latLonLines.add(converted);
-                }
-
-                String js = toJson(latLonLines);
-
-                String call = String.format("addLine(%s, %d);", js, kote);
-
-                javafx.application.Platform.runLater(() ->
-                        engine.executeScript(call)
-                );
+        while ((line = br.readLine()) != null) {
+            if (header) {
+                header = false;
+                continue;
             }
 
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+            // Split on TAB instead of comma
+            String[] cols = line.split("\t");
+
+            // Find WKT column (usually last)
+            String rawWkt = null;
+            for (String c : cols) {
+                if (c.contains("MULTILINESTRING")) {
+                    rawWkt = c;
+                    break;
+                }
+            }
+            if (rawWkt == null) continue; // skip broken rows
+
+            String wkt = rawWkt.trim();
+
+            // Find kote (depends on your file)
+            int kote;
+            try {
+                kote = Integer.parseInt(cols[4]);  // adjust if column changes
+            } catch (Exception e) {
+                kote = 0;
+            }
+
+          try {
+    GeometryFactory gf = new GeometryFactory();
+    WKTReader reader = new WKTReader(gf);
+
+    Geometry geom = reader.read(wkt);
+
+    int numGeom = geom.getNumGeometries();
+
+    for (int gIndex = 0; gIndex < numGeom; gIndex++) {
+
+        Geometry part = geom.getGeometryN(gIndex);
+        if (!(part instanceof LineString)) continue;
+
+        LineString lineString = (LineString) part;
+        Coordinate[] coords = lineString.getCoordinates();
+
+       StringBuilder js = new StringBuilder("addLine([");
+
+for (int i = 0; i < coords.length; i++) {
+    Coordinate c = coords[i];
+    double[] latlon = toLatLon(c.x, c.y);
+    js.append("[").append(latlon[0]).append(",").append(latlon[1]).append("]");
+    if (i < coords.length - 1) js.append(",");
+}
+
+js.append("], ").append(kote).append(");");
+
+
+
+        Platform.runLater(() -> engine.executeScript(js.toString()));
     }
+
+} catch (Exception e) {
+    e.printStackTrace();
+}
+
+
+        }
+
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
 
     /** Parse MULTILINESTRING ((x y, x y), (x y, x y)) */
     private List<List<double[]>> parseMultiLineString(String wkt) {
@@ -114,13 +204,17 @@ public class MapApp extends Application {
         return result;
     }
 
-    /** Convert UTM32 (EPSG:25832) to WGS84 */
-    private double[] toLatLon(double x, double y) {
-        double lon = (x / 20037508.34) * 180;
-        double lat = (y / 20037508.34) * 180;
-        lat = 180 / Math.PI * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
-        return new double[]{lat, lon};
-    }
+
+
+private double[] toLatLon(double x, double y) {
+    ProjCoordinate in = new ProjCoordinate(x, y);
+    ProjCoordinate out = new ProjCoordinate();
+    transform.transform(in, out);
+    return new double[]{out.y, out.x};  // Leaflet uses [lat, lon]
+}
+
+
+
 
     /** Convert to JSON manually */
     private String toJson(List<List<double[]>> lines) {
