@@ -186,10 +186,8 @@ private String cleanWkt(String wkt) {
         GeometryFactory gf = new GeometryFactory();
         WKTReader reader = new WKTReader(gf);
 
-        // Batch buffer
-        StringBuilder batch = new StringBuilder();
-
-        int jsCount = 0;
+        // JSON tile batch
+        List<String> objects = new ArrayList<>();
 
         while ((line = br.readLine()) != null) {
 
@@ -230,7 +228,6 @@ private String cleanWkt(String wkt) {
                 continue;
             }
 
-            // Convert geometry parts
             int numGeom = geom.getNumGeometries();
 
             for (int gIndex = 0; gIndex < numGeom; gIndex++) {
@@ -241,37 +238,31 @@ private String cleanWkt(String wkt) {
                 LineString ls = (LineString) part;
                 Coordinate[] coords = ls.getCoordinates();
 
-                // Build JS in memory
-                batch.append("addLine([");
+                // Build JSON object for 1 polyline
+                StringBuilder obj = new StringBuilder();
+                obj.append("{\"kote\":").append(kote).append(",\"coords\":[");
+
                 for (int i = 0; i < coords.length; i++) {
                     Coordinate c = coords[i];
                     double[] latlon = toLatLon(c.x, c.y);
 
-                    batch.append("[")
-                            .append(latlon[0]).append(",")
-                            .append(latlon[1]).append("]");
+                    obj.append("[")
+                       .append(latlon[0]).append(",")
+                       .append(latlon[1]).append("]");
 
-                    if (i < coords.length - 1) batch.append(",");
+                    if (i < coords.length - 1) obj.append(",");
                 }
-                batch.append("], ").append(kote).append(");\n");
 
-                jsCount++;
-
-                // flush every 500 lines
-                if (jsCount >= 500) {
-                    String jsChunk = batch.toString();
-                    Platform.runLater(() -> engine.executeScript(jsChunk));
-                    batch.setLength(0);
-                    jsCount = 0;
-                }
+                obj.append("]}");
+                objects.add(obj.toString());
             }
         }
 
-        // flush remaining lines
-        if (batch.length() > 0) {
-            String jsChunk = batch.toString();
-            Platform.runLater(() -> engine.executeScript(jsChunk));
-        }
+        // --- SEND ONE BIG BATCH TO JAVASCRIPT ---
+        String json = "[" + String.join(",", objects) + "]";
+        Platform.runLater(() ->
+            engine.executeScript("loadTile(" + json + ");")
+        );
 
         System.out.println("Finished loading tile: " + filename);
 

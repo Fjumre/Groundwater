@@ -82,6 +82,12 @@ map.createPane("groundwaterPane");
 map.getPane("groundwaterPane").style.zIndex = 650;
 map.getPane("groundwaterPane").style.pointerEvents = "auto";
 
+function loadTile(batch) {
+    for (let item of batch) {
+        addLine(item.coords, item.kote);
+    }
+}
+
     function addLine(coords, kote) {
     L.polyline(coords, {
         color: colorForKote(kote),
