@@ -1,8 +1,10 @@
 package groundwater;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.locationtech.jts.geom.Coordinate;
@@ -18,14 +20,17 @@ import org.locationtech.proj4j.ProjCoordinate;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.concurrent.Worker;
 import javafx.scene.Scene;
 import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebView;
 import javafx.stage.Stage;
 
 
+
 public class MapApp extends Application {
 
+    public SplitGroundwaterCSV splitGroundwaterCSV = new SplitGroundwaterCSV();
     private WebEngine engine;
 private final CRSFactory crsFactory = new CRSFactory();
 private final CoordinateTransformFactory ctFactory = new CoordinateTransformFactory();
@@ -67,13 +72,33 @@ public void start(Stage stage) {
     });
 
     engine.load(getClass().getResource("/map.html").toExternalForm());
+engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> {
+    if (newState == Worker.State.SUCCEEDED) {
+        System.out.println("Map HTML fully loaded.");
 
-    engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
+        // NEW: Generate tiles if they don't exist
+        try {
+            SplitGroundwaterCSV.splitGroundwaterCSV(null);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        // Now load tiles
+        new Thread(this::loadAllTiles).start();
+    }
+});
+   /* engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
         if (newDoc != null) {
-            new Thread(() -> loadGroundwaterData("data/GroundWater.csv")).start();
+            new Thread(() -> loadAllTiles()).start();
+        }
+    });*/
+
+ engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> {
+        if (newState == Worker.State.SUCCEEDED) {
+            System.out.println("Map HTML fully loaded, starting tile loading...");
+            new Thread(this::loadAllTiles).start();
         }
     });
-
     stage.setScene(new Scene(webView, 1200, 800));
 
 
@@ -127,6 +152,31 @@ private String cleanWkt(String wkt) {
 }
 
     /** Load CSV and send lines to the map */
+   private void loadAllTiles() {
+    File tileDir = new File("data/tiles/");
+    System.out.println("Looking for tiles in: " + tileDir.getAbsolutePath());
+
+    File[] tiles = tileDir.listFiles((d, name) -> name.endsWith(".csv"));
+
+    if (tiles == null || tiles.length == 0) {
+        System.out.println("No tile CSVs found in " + tileDir.getAbsolutePath());
+        return;
+    }
+
+    // Sort files alphabetically
+    Arrays.sort(tiles);
+
+    new Thread(() -> {
+        for (File f : tiles) {
+            System.out.println("Loading: " + f.getName());
+            loadGroundwaterData(f.getAbsolutePath());
+
+            // avoid freezing
+            try { Thread.sleep(150); } catch (Exception ignore) {}
+        }
+    }).start();
+}
+
    private void loadGroundwaterData(String filename) {
     try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
 
@@ -136,6 +186,11 @@ private String cleanWkt(String wkt) {
         GeometryFactory gf = new GeometryFactory();
         WKTReader reader = new WKTReader(gf);
 
+        // Batch buffer
+        StringBuilder batch = new StringBuilder();
+
+        int jsCount = 0;
+
         while ((line = br.readLine()) != null) {
 
             if (header) {
@@ -143,11 +198,9 @@ private String cleanWkt(String wkt) {
                 continue;
             }
 
-            // Split CSV fields
             String[] cols = line.split(";", -1);
 
-            // ----------- FIND WKT START COLUMN -----------
-
+            // Find WKT start
             int wktStart = -1;
             for (int i = 0; i < cols.length; i++) {
                 if (cols[i].contains("MULTILINESTRING")) {
@@ -155,26 +208,20 @@ private String cleanWkt(String wkt) {
                     break;
                 }
             }
-            if (wktStart == -1)
-                continue; // no geometry, skip row
+            if (wktStart == -1) continue;
 
-            // ---------- REBUILD FULL WKT (may span columns) -----------
-
+            // Build full WKT
             StringBuilder wktBuilder = new StringBuilder();
             for (int i = wktStart; i < cols.length; i++) {
                 wktBuilder.append(cols[i]);
             }
-
             String rawWkt = cleanWkt(wktBuilder.toString());
 
-            // ---------- Parse kote (depth/level) --------------------
+            // Parse kote
             int kote = 0;
-            try {
-                kote = Integer.parseInt(cols[4]);
-            } catch (Exception ignore) {}
+            try { kote = Integer.parseInt(cols[4]); } catch (Exception ignore) {}
 
-            // ---------- Parse geometry safely -----------------------
-
+            // Parse geometry
             Geometry geom;
             try {
                 geom = reader.read(rawWkt);
@@ -183,8 +230,7 @@ private String cleanWkt(String wkt) {
                 continue;
             }
 
-            // ---------- Iterate multilines --------------------------
-
+            // Convert geometry parts
             int numGeom = geom.getNumGeometries();
 
             for (int gIndex = 0; gIndex < numGeom; gIndex++) {
@@ -193,30 +239,47 @@ private String cleanWkt(String wkt) {
                 if (!(part instanceof LineString)) continue;
 
                 LineString ls = (LineString) part;
-
                 Coordinate[] coords = ls.getCoordinates();
 
-                // Build JS call
-                StringBuilder js = new StringBuilder("addLine([");
-
+                // Build JS in memory
+                batch.append("addLine([");
                 for (int i = 0; i < coords.length; i++) {
                     Coordinate c = coords[i];
                     double[] latlon = toLatLon(c.x, c.y);
-                    js.append("[").append(latlon[0]).append(",").append(latlon[1]).append("]");
-                    if (i < coords.length - 1) js.append(",");
+
+                    batch.append("[")
+                            .append(latlon[0]).append(",")
+                            .append(latlon[1]).append("]");
+
+                    if (i < coords.length - 1) batch.append(",");
                 }
+                batch.append("], ").append(kote).append(");\n");
 
-                js.append("], ").append(kote).append(");");
+                jsCount++;
 
-                String script = js.toString();
-                Platform.runLater(() -> engine.executeScript(script));
+                // flush every 500 lines
+                if (jsCount >= 500) {
+                    String jsChunk = batch.toString();
+                    Platform.runLater(() -> engine.executeScript(jsChunk));
+                    batch.setLength(0);
+                    jsCount = 0;
+                }
             }
         }
+
+        // flush remaining lines
+        if (batch.length() > 0) {
+            String jsChunk = batch.toString();
+            Platform.runLater(() -> engine.executeScript(jsChunk));
+        }
+
+        System.out.println("Finished loading tile: " + filename);
 
     } catch (Exception e) {
         e.printStackTrace();
     }
 }
+
 
 
     /** Parse MULTILINESTRING ((x y, x y), (x y, x y)) */
