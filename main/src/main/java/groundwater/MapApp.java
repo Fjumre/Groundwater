@@ -32,13 +32,13 @@ public class MapApp extends Application {
 
     public SplitGroundwaterCSV splitGroundwaterCSV = new SplitGroundwaterCSV();
     private WebEngine engine;
-private final CRSFactory crsFactory = new CRSFactory();
-private final CoordinateTransformFactory ctFactory = new CoordinateTransformFactory();
-private final CoordinateReferenceSystem srcCRS =
-        crsFactory.createFromName("EPSG:25832");  // your X/Y system
-private final CoordinateReferenceSystem dstCRS =
+    private final CRSFactory crsFactory = new CRSFactory();
+    private final CoordinateTransformFactory ctFactory = new CoordinateTransformFactory();
+    private final CoordinateReferenceSystem srcCRS =
+        crsFactory.createFromName("EPSG:25832");  // X/Y system
+    private final CoordinateReferenceSystem dstCRS =
         crsFactory.createFromName("EPSG:4326");   // WGS84 lat/lon
-private final CoordinateTransform transform =
+    private final CoordinateTransform transform =
         ctFactory.createTransform(srcCRS, dstCRS);
 
     public static void main(String[] args) {
@@ -102,10 +102,10 @@ public void start(Stage stage) {
     stage.setScene(new Scene(webView, 1200, 800));
 
 
-    // Fix #2: Force scene to pixel-aligned rendering
+    // Force scene to pixel-aligned rendering
     stage.getScene().getRoot().setStyle("-fx-snap-to-pixel:true;");
 
-    // Fix #3: Prevent fractional stage dimensions
+    // Prevent fractional stage dimensions
     stage.widthProperty().addListener((obs, oldV, newV) ->
         stage.setWidth(Math.floor(newV.doubleValue()))
     );
