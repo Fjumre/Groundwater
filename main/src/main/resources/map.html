@@ -10,15 +10,18 @@
             padding: 0;
             image-rendering: pixelated;
         }
-        #legend {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            background: white;
-            padding: 10px;
-            border-radius: 6px;
-            box-shadow: 0 0 5px #999;
-        }
+       
+            #info {
+                position: absolute;
+                bottom: 20px;
+                left: 20px;
+                background: white;
+                padding: 10px;
+                border-radius: 6px;
+                box-shadow: 0 0 5px #999;
+                z-index: 9999; 
+            }
+
         .colorbox {
             display:inline-block;
             width:18px;
@@ -45,7 +48,7 @@
 
 <div id="map"></div>
 
-<div id="legend">
+<div id="info">
     <b>Groundwater level (kote)</b><br>
     <span class="colorbox" style="background:darkblue"></span> kote < 0<br>
     <span class="colorbox" style="background:blue"></span> 0 – 5<br>

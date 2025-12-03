@@ -72,7 +72,7 @@ public void start(Stage stage) {
     });
 
     engine.load(getClass().getResource("/map.html").toExternalForm());
-engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> {
+/*engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> {
     if (newState == Worker.State.SUCCEEDED) {
         System.out.println("Map HTML fully loaded.");
 
@@ -87,7 +87,7 @@ engine.getLoadWorker().stateProperty().addListener((obs, oldState, newState) -> 
         new Thread(this::loadAllTiles).start();
     }
 });
-   /* engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
+   engine.documentProperty().addListener((obs, oldDoc, newDoc) -> {
         if (newDoc != null) {
             new Thread(() -> loadAllTiles()).start();
         }
