@@ -1,91 +1,32 @@
-Groundwater Visualization System
+# Groundwater Viewer
 
-This project visualizes Danish groundwater pipe data using JavaFX, Leaflet, and a highly optimized HTML5 canvas renderer.
-It supports very large datasets by splitting CSV files into tiles and rendering them efficiently in the browser.
+A lightweight JavaFX + Leaflet application that displays large
+groundwater datasets efficiently using canvas-based rendering.
 
-Features
+## Features
 
-Fast rendering using <canvas> (much faster than Leaflet polylines)
+-   Fast drawing of large MULTILINESTRING datasets\
+-   Tile‑based CSV loading\
+-   Canvas rendering for high performance\
+-   Color‑coded groundwater elevations (kote)\
+-   Automatic coordinate transformation (EPSG:25832 → WGS84)
 
-Automatic CSV tiling (2000 lines per tile)
+## Structure
 
-Real-time loading from Java → JavaScript (JSON batches)
+-   `map.html` -- Leaflet + canvas rendering\
+-   `MapApp.java` -- JavaFX application\
+-   `SplitGroundwaterCSV.java` -- Utility that splits the dataset into
+    tiles\
+-   `data/tiles/` -- Folder containing generated tile CSVs
 
-Coordinate transformation (EPSG:25832 → WGS84)
+## Usage
 
-Bounding-box culling for performance
+1.  Place `GroundWater.csv` in `/data/`\
+2.  Run `SplitGroundwaterCSV` to generate tiles\
+3.  Run `MapApp` to load the viewer
 
-Level-of-detail rendering based on zoom level
+## Notes
 
-Color-coded groundwater elevation (kote)
-
-How It Works
-1. CSV → Tiles
-
-SplitGroundwaterCSV divides the large dataset into tiles:
-
-data/tiles/tile_0.csv
-data/tiles/tile_1.csv
-...
-
-2. Java Loads Each Tile
-
-For each tile:
-
-WKT geometry is parsed (JTS)
-
-Coordinates transformed (Proj4J)
-
-Bounding box computed
-
-JSON batch created
-
-Sent to the web view via:
-
-engine.executeScript("loadTile(" + json + ");");
-
-3. HTML5 Canvas Draws All Lines
-
-map.html collects all lines and draws them in a canvas overlay on top of the Leaflet map.
-
-Optimizations include:
-
-Rendering only visible lines
-
-Skipping points when zoomed out
-
-Redrawing using requestAnimationFrame()
-
-Run the Project
-Build:
-mvn clean install
-
-Run:
-mvn javafx:run
-
-
-Tiles are automatically generated if missing.
-
-Project Structure
-src/main/java/groundwater/
-  MapApp.java
-  SplitGroundwaterCSV.java
-
-src/main/resources/
-  map.html
-
-data/
-  GroundWater.csv
-  tiles/
-
-Dependencies
-
-JavaFX
-
-Leaflet.js
-
-JTS (WKT parsing)
-
-Proj4J (coordinate transform)
-
-HTML5 Canvas
+-   Canvas rendering allows smooth panning and zooming even with large
+    datasets\
+-   Bounding boxes + level‑of‑detail reduce lag at low zoom levels
