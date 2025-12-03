@@ -186,8 +186,11 @@ private String cleanWkt(String wkt) {
         GeometryFactory gf = new GeometryFactory();
         WKTReader reader = new WKTReader(gf);
 
-        // JSON tile batch
-        List<String> objects = new ArrayList<>();
+        // JSON batch for this tile
+        StringBuilder json = new StringBuilder();
+        json.append("[");
+
+        boolean firstFeature = true;
 
         while ((line = br.readLine()) != null) {
 
@@ -198,7 +201,7 @@ private String cleanWkt(String wkt) {
 
             String[] cols = line.split(";", -1);
 
-            // Find WKT start
+            // Find where WKT begins
             int wktStart = -1;
             for (int i = 0; i < cols.length; i++) {
                 if (cols[i].contains("MULTILINESTRING")) {
@@ -206,63 +209,89 @@ private String cleanWkt(String wkt) {
                     break;
                 }
             }
-            if (wktStart == -1) continue;
+            if (wktStart == -1)
+                continue;
 
-            // Build full WKT
+            // Rebuild WKT across all remaining columns
             StringBuilder wktBuilder = new StringBuilder();
             for (int i = wktStart; i < cols.length; i++) {
                 wktBuilder.append(cols[i]);
             }
+
             String rawWkt = cleanWkt(wktBuilder.toString());
 
             // Parse kote
             int kote = 0;
-            try { kote = Integer.parseInt(cols[4]); } catch (Exception ignore) {}
+            try {
+                kote = Integer.parseInt(cols[4]);
+            } catch (Exception ignore) {}
 
             // Parse geometry
             Geometry geom;
             try {
                 geom = reader.read(rawWkt);
-            } catch (Exception e) {
+            } catch (Exception ex) {
                 System.err.println("Invalid WKT skipped: " + rawWkt);
                 continue;
             }
 
-            int numGeom = geom.getNumGeometries();
+            int num = geom.getNumGeometries();
 
-            for (int gIndex = 0; gIndex < numGeom; gIndex++) {
-
-                Geometry part = geom.getGeometryN(gIndex);
+            // For each LineString inside MULTILINESTRING
+            for (int g = 0; g < num; g++) {
+                Geometry part = geom.getGeometryN(g);
                 if (!(part instanceof LineString)) continue;
 
                 LineString ls = (LineString) part;
                 Coordinate[] coords = ls.getCoordinates();
 
-                // Build JSON object for 1 polyline
-                StringBuilder obj = new StringBuilder();
-                obj.append("{\"kote\":").append(kote).append(",\"coords\":[");
+                // ---------- NEW: compute bbox ----------
+                double minLat = Double.POSITIVE_INFINITY;
+                double maxLat = Double.NEGATIVE_INFINITY;
+                double minLon = Double.POSITIVE_INFINITY;
+                double maxLon = Double.NEGATIVE_INFINITY;
+
+                // Append JSON object
+                if (!firstFeature) json.append(",");
+                firstFeature = false;
+
+                json.append("{\"kote\":").append(kote).append(",\"coords\":[");
 
                 for (int i = 0; i < coords.length; i++) {
-                    Coordinate c = coords[i];
-                    double[] latlon = toLatLon(c.x, c.y);
+                    double[] ll = toLatLon(coords[i].x, coords[i].y);
+                    double lat = ll[0];
+                    double lon = ll[1];
 
-                    obj.append("[")
-                       .append(latlon[0]).append(",")
-                       .append(latlon[1]).append("]");
+                    // update bbox
+                    if (lat < minLat) minLat = lat;
+                    if (lat > maxLat) maxLat = lat;
+                    if (lon < minLon) minLon = lon;
+                    if (lon > maxLon) maxLon = lon;
 
-                    if (i < coords.length - 1) obj.append(",");
+                    json.append("[").append(lat).append(",").append(lon).append("]");
+                    if (i < coords.length - 1) json.append(",");
                 }
 
-                obj.append("]}");
-                objects.add(obj.toString());
+                json.append("],\"bbox\":[")
+                    .append(minLat).append(",")
+                    .append(minLon).append(",")
+                    .append(maxLat).append(",")
+                    .append(maxLon).append("]}");
             }
         }
 
-        // --- SEND ONE BIG BATCH TO JAVASCRIPT ---
-        String json = "[" + String.join(",", objects) + "]";
-        Platform.runLater(() ->
-            engine.executeScript("loadTile(" + json + ");")
-        );
+        json.append("]");
+
+        // Call JS function loadTile(JSON)
+        String jsCall = "loadTile(" + json.toString() + ");";
+
+        Platform.runLater(() -> {
+            try {
+                engine.executeScript(jsCall);
+            } catch (Exception ignored) {
+                System.err.println("JS injection failed for tile: " + filename);
+            }
+        });
 
         System.out.println("Finished loading tile: " + filename);
 

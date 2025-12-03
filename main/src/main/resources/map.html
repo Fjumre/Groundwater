@@ -10,17 +10,17 @@
             padding: 0;
             image-rendering: pixelated;
         }
-       
-            #info {
-                position: absolute;
-                bottom: 20px;
-                left: 20px;
-                background: white;
-                padding: 10px;
-                border-radius: 6px;
-                box-shadow: 0 0 5px #999;
-                z-index: 9999; 
-            }
+
+        #info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            box-shadow: 0 0 5px #999;
+            z-index: 9999;
+        }
 
         .colorbox {
             display:inline-block;
@@ -28,9 +28,16 @@
             height:12px;
             margin-right:6px;
         }
+
+        #groundCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 650;      /* BELOW the info box */
+            pointer-events: none;
+        }
     </style>
 
-    <!-- MUST BE FIRST: disable retina + disable transforms BEFORE leaflet loads -->
     <script>
         window.devicePixelRatio = 1;
         L_DISABLE_3D = true;
@@ -39,22 +46,22 @@
         L.DomUtil.TRANSFORM = '';
     </script>
 
-    <!-- Load Leaflet ONCE -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-</head>
 
+</head>
 <body>
 
 <div id="map"></div>
+<canvas id="groundCanvas"></canvas>
 
 <div id="info">
-    <b>Groundwater level (kote)</b><br>
-    <span class="colorbox" style="background:darkblue"></span> kote < 0<br>
+    <b>Groundwater (kote)</b><br>
+    <span class="colorbox" style="background:darkblue"></span> kote &lt; 0<br>
     <span class="colorbox" style="background:blue"></span> 0 – 5<br>
     <span class="colorbox" style="background:green"></span> 6 – 10<br>
     <span class="colorbox" style="background:orange"></span> 11 – 15<br>
-    <span class="colorbox" style="background:red"></span> > 15<br>
+    <span class="colorbox" style="background:red"></span> &gt; 15<br>
 </div>
 
 <script>
@@ -66,10 +73,21 @@
     }).setView([56.0, 10.0], 7);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        maxNativeZoom: 18,
-        tileSize: 256
+        maxZoom: 19
     }).addTo(map);
+
+    //-----------------------------------
+    // FAST CANVAS DATA STORAGE
+    //-----------------------------------
+
+    let groundwaterLines = [];     // ← All tiles stored here
+    const canvas = document.getElementById("groundCanvas");
+    const ctx = canvas.getContext("2d");
+
+
+    //-----------------------------------
+    // COLOR FUNCTION
+    //-----------------------------------
 
     function colorForKote(kote) {
         if (kote < 0) return "darkblue";
@@ -78,27 +96,91 @@
         if (kote <= 15) return "orange";
         return "red";
     }
-map.createPane("groundwaterPane");
-map.getPane("groundwaterPane").style.zIndex = 650;
-map.getPane("groundwaterPane").style.pointerEvents = "auto";
 
-function loadTile(batch) {
-    for (let item of batch) {
-        addLine(item.coords, item.kote);
+
+    //-----------------------------------
+    // REDRAW FUNCTION (CANVAS)
+    //-----------------------------------
+
+    function redrawGroundwater() {
+        const size = map.getSize();
+        canvas.width  = size.x;
+        canvas.height = size.y;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const mapBounds = map.getBounds();
+        const zoom = map.getZoom();
+
+        groundwaterLines.forEach(obj => {
+            const coords = obj.coords;
+            const kote   = obj.kote;
+
+            // --- optional bbox culling (if bbox is present) ---
+            if (obj.bbox) {
+                const [minLat, minLon, maxLat, maxLon] = obj.bbox;
+                const lineBounds = L.latLngBounds(
+                    [minLat, minLon],
+                    [maxLat, maxLon]
+                );
+                if (!mapBounds.intersects(lineBounds)) {
+                    return; // skip this line, not visible
+                }
+            }
+
+            // Level-of-detail: skip points when zoomed out
+            let step = 1;
+            if (zoom <= 7)      step = 8;
+            else if (zoom <= 9) step = 4;
+            else if (zoom <= 11)step = 2;
+            // zoom > 11 → full detail
+
+            if (coords.length === 0) return;
+
+            ctx.strokeStyle = colorForKote(kote);
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            for (let i = 0; i < coords.length; i += step) {
+                const latlon = coords[i]; // [lat, lon]
+                const p = map.latLngToContainerPoint(latlon);
+
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else         ctx.lineTo(p.x, p.y);
+            }
+
+            ctx.stroke();
+        });
     }
-}
 
-    function addLine(coords, kote) {
-    L.polyline(coords, {
-        color: colorForKote(kote),
-        weight: 2,
-        opacity: 0.9,
-        pane: 'groundwaterPane'
-    })
-    .addTo(map)
-    .bindPopup("Groundwater level (kote): <b>" + kote + " m</b>");
-}
 
+    //-----------------------------------
+    // Called by Java: load JSON tile
+    //-----------------------------------
+
+    function loadTile(tileBatchJson) {
+        groundwaterLines.push(...tileBatchJson);
+        scheduleRedraw();
+    }
+
+    //-----------------------------------
+    // Redraw on zoom / pan (throttled)
+    //-----------------------------------
+
+    let redrawScheduled = false;
+
+    function scheduleRedraw() {
+        if (redrawScheduled) return;
+        redrawScheduled = true;
+        requestAnimationFrame(() => {
+            redrawScheduled = false;
+            redrawGroundwater();
+        });
+    }
+
+    window.addEventListener("resize", scheduleRedraw);
+    map.on("zoom",  scheduleRedraw);
+    map.on("move",  scheduleRedraw);
 </script>
 
 </body>
